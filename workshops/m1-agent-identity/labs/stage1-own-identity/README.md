@@ -8,17 +8,33 @@ Stand up Ada with `identity_type=AGENT_IDENTITY`, grant her SPIFFE principal `ro
 
 ## What's in this folder
 
+```
+stage1-own-identity/
+├── deploy.py            ← run from here
+├── grant_access.sh
+├── test_local.py
+├── README.md
+└── agent/               ← the agent package adk deploy ships
+    ├── __init__.py
+    ├── agent.py            ← TODO: build the LlmAgent
+    ├── tools.py            ← TODO: wrap GCS read in a tool
+    ├── agent_engine_app.py ← AdkApp wrapper (no TODOs)
+    └── requirements.txt    ← runtime deps (lower bounds, not pins)
+```
+
 | File | Purpose | Has TODOs? |
 |---|---|---|
-| `tools.py` | Order-lookup tool wrapping `google-cloud-storage` | ✅ |
-| `agent.py` | Ada's `LlmAgent` definition | ✅ |
-| `agent_engine_app.py` | `AdkApp` wrapper required by `adk deploy` | ❌ |
+| `agent/tools.py` | Order-lookup tool wrapping `google-cloud-storage` | ✅ |
+| `agent/agent.py` | Ada's `LlmAgent` definition | ✅ |
+| `agent/agent_engine_app.py` | `AdkApp` wrapper required by `adk deploy` | ❌ |
+| `agent/requirements.txt` | Runtime deps (lower bounds, not pins) | ❌ |
 | `deploy.py` | Two-step deploy: empty engine + ADK CLI ship | ❌ |
 | `grant_access.sh` | Bind Ada's principal to `roles/storage.objectViewer` on the bucket | ❌ |
 | `test_local.py` | Local sanity check using your ADC | ❌ |
-| `requirements.txt` | Runtime deps (lower bounds, not pins) | ❌ |
 
-The reference solution is in [`../../solutions/stage1/`](../../solutions/stage1/).
+> **Why is agent code in `agent/` instead of the top level?** The v1beta1 SDK auto-discovers `agent_engine_app.py` if it sits in `deploy.py`'s cwd and tries to bundle the *whole* working dir into the create-engine API call. With `.venv/` plus `deploy.log` being tee'd live, that easily exceeds the 8 MB request payload limit. Putting agent code in a subpackage keeps Phase 3 (engine creation) truly empty; Phase 5's `adk deploy` then ships `agent/` via streamed chunks with no size issue.
+
+The reference solution is in [`../../solutions/stage1/`](../../solutions/stage1/) — same `agent/` subpackage layout.
 
 ## Steps
 
@@ -29,12 +45,15 @@ bash ../../setup/00_check_prereqs.sh
 bash ../../setup/10_enable_apis.sh
 bash ../../setup/20_create_bucket_and_seed.sh
 
-# 1. Implement the TODOs in agent.py and tools.py
+# 1. Implement the TODOs in agent/agent.py and agent/tools.py
 #    (See "TODOs at a glance" below)
+#    OR fast-path for validation: copy the reference solution
+#       cp -r ../../solutions/stage1/agent/. agent/
 
 # 2. Local sanity check using YOUR ADC, not Ada's identity yet
 gcloud auth application-default login   # one-time
-pip install -r requirements.txt
+python -m venv .venv && source .venv/bin/activate
+pip install -r agent/requirements.txt
 python test_local.py                     # should print all 5 orders
 
 # 3. Deploy. This is a TWO-STEP operation:
@@ -59,10 +78,10 @@ adk run-remote --reasoning-engine "$REASONING_ENGINE_ID"
 
 ## TODOs at a glance
 
-1. **`tools.py` — `lookup_order`.** `storage.Client()` with **no arguments** (ADC → Agent Identity at runtime). Read `orders.csv` and return the row matching `order_id`.
-2. **`agent.py` — `create_agent`.** `LlmAgent(name="ada", model="gemini-2.5-flash", instruction=INSTRUCTIONS, tools=[lookup_order])`.
+1. **`agent/tools.py` — `lookup_order`.** `storage.Client()` with **no arguments** (ADC → Agent Identity at runtime). Read `orders.csv` and return the row matching `order_id`.
+2. **`agent/agent.py` — `create_agent`.** `LlmAgent(name="ada", model="gemini-2.5-flash", instruction=INSTRUCTIONS, tools=[lookup_order])`.
 
-That's it. `deploy.py`, `agent_engine_app.py`, `grant_access.sh`, and `requirements.txt` are pre-written — they're not the lesson, they're the scaffolding.
+That's it. `deploy.py`, `agent/agent_engine_app.py`, `grant_access.sh`, and `agent/requirements.txt` are pre-written — they're not the lesson, they're the scaffolding.
 
 ## Why two-step deploy?
 
@@ -122,6 +141,8 @@ Bound to Ada's specific SPIFFE principal — not a project-wide service account,
 
 ## Common pitfalls
 
+- **`Deploy failed: 400 INVALID_ARGUMENT. Request payload size exceeds the limit: 8388608 bytes`** during Phase 3 → `agent_engine_app.py` is at the top level of `stage1-own-identity/` instead of inside `agent/`. The SDK auto-bundled the whole cwd including `.venv/` and exceeded the 8 MB request limit. Move agent code under `agent/` (this layout already does that — verify nobody added a top-level `agent_engine_app.py`).
+- **Re-running after a Phase 5 failure** → the engine and IAM grants from Phase 3/4 are still good. Just `export REASONING_ENGINE_ID=<id> AGENT_IDENTITY=<principal>` (printed by the prior run) and re-run `python deploy.py`. Phase 3 will skip, Phase 4 is idempotent, Phase 5 retries.
 - **`failed to start and cannot serve traffic`** in Cloud Logs after deploy → you re-added `--trace_to_cloud`. Remove it. Delete the broken engine and redeploy.
 - **`Successfully uninstalled google-auth-2.47.0`** in build log → your `requirements.txt` pinned `google-auth==<too-old>`. Use the `>=2.50.0` floor in this folder's `requirements.txt`.
 - **`Permission denied` reading the bucket** → you skipped `grant_access.sh`. The `REASONING_ENGINE_ID` doesn't exist until Phase 3 completes.

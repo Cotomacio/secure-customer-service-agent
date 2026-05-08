@@ -5,7 +5,7 @@ using YOUR application default credentials, NOT Ada's identity.
 This catches CSV/parsing bugs before you spend 10 minutes on a deploy.
 """
 
-from tools import lookup_order
+from agent.tools import lookup_order
 
 
 def main() -> None:

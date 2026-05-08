@@ -1,8 +1,9 @@
 """Stage 1 reference solution — deploy.py.
 
-Mirrors labs/stage1-own-identity/deploy.py exactly — there are no TODOs in
-deploy.py. The teaching is in the structure (two-step deploy, no tracing,
-expressUser baseline) not in fill-in-the-blanks.
+Mirrors labs/stage1-own-identity/deploy.py exactly. There are no TODOs in
+deploy.py; the teaching is in the structure (two-step deploy, no tracing,
+expressUser baseline, agent/ subpackage to avoid the SDK auto-bundle
+hitting the 8 MB request limit) — not fill-in-the-blanks.
 """
 
 import os
@@ -17,9 +18,6 @@ from vertexai import types
 
 PROJECT_ID = os.environ["GOOGLE_CLOUD_PROJECT"]
 LOCATION = os.environ.get("LOCATION", "us-central1")
-STAGING_BUCKET = os.environ.get(
-    "STAGING_BUCKET", f"gs://acme-orders-{PROJECT_ID}-staging"
-).replace("gs://", "")
 EXISTING_ENGINE_ID = os.environ.get("REASONING_ENGINE_ID")
 
 
@@ -53,9 +51,12 @@ def create_empty_engine() -> tuple[str, str | None]:
                 "display_name": "ada-stage1",
             }
         )
+    except Exception as e:
+        stop.set(); t.join(timeout=1)
+        print(f"\n   ❌ Phase 3 failed: {e}")
+        raise
     finally:
-        stop.set()
-        t.join(timeout=1)
+        stop.set(); t.join(timeout=1)
     engine_id = remote_app.api_resource.name.split("/")[-1]
     spec = getattr(remote_app.api_resource, "spec", None)
     effective_identity = getattr(spec, "effective_identity", None) if spec else None
@@ -99,19 +100,23 @@ def write_runtime_env() -> str:
     return env_path
 
 
-def deploy_code(engine_id: str, env_file: str) -> None:
+def deploy_code(engine_id: str, env_file: str) -> bool:
     print("Phase 5: deploying code via `adk deploy agent_engine`")
     cmd = [
         "adk", "deploy", "agent_engine",
         "--project", PROJECT_ID,
         "--region", LOCATION,
-        "--staging_bucket", f"gs://{STAGING_BUCKET}",
         "--env_file", env_file,
         "--agent_engine_id", engine_id,
-        ".",
+        "agent",
     ]
     here = os.path.dirname(os.path.abspath(__file__))
-    subprocess.run(cmd, cwd=here)
+    r = subprocess.run(cmd, cwd=here)
+    if r.returncode == 0:
+        print("   ✓ adk deploy succeeded")
+        return True
+    print(f"   ❌ adk deploy returned exit code {r.returncode}")
+    return False
 
 
 def construct_identity_fallback(engine_id: str) -> str:
@@ -147,10 +152,10 @@ def main() -> int:
     else:
         agent_identity = construct_identity_fallback(engine_id)
     grant_baseline_iam(agent_identity)
-    deploy_code(engine_id, env_file)
+    ok = deploy_code(engine_id, env_file)
     print(f'\nexport REASONING_ENGINE_ID="{engine_id}"')
     print(f'export AGENT_IDENTITY="{agent_identity}"')
-    return 0
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

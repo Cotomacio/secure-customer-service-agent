@@ -51,9 +51,16 @@ def _spinner(stop: threading.Event, started: float) -> None:
 
 
 def create_empty_engine() -> tuple[str, str | None]:
-    """Phase 3 — create an empty Agent Engine with Agent Identity enabled."""
+    """Phase 3 — create an empty Agent Engine with Agent Identity enabled.
+
+    Critical: the v1beta1 SDK auto-discovers `agent_engine_app.py` if it's in
+    the cwd and tries to bundle the whole working dir. To keep this call truly
+    "empty engine creation", agent code lives in the `agent/` subpackage —
+    deploy.py's cwd has no entry point at the top level for the SDK to pick up.
+    Phase 5 then ships the `agent/` package via ADK CLI which handles chunking.
+    """
     print("Phase 3: creating empty Agent Engine with Agent Identity")
-    print("   → can take 3–15 min; spinner below")
+    print("   → typically ~30 s; can be longer on first deploy")
 
     client = vertexai.Client(
         project=PROJECT_ID,
@@ -71,6 +78,16 @@ def create_empty_engine() -> tuple[str, str | None]:
                 "display_name": "ada-stage1",
             }
         )
+    except Exception as e:
+        stop.set()
+        t.join(timeout=1)
+        print(f"\n   ❌ Phase 3 failed: {e}")
+        print("\n   Most common causes:")
+        print("   - 8 MB request limit hit because agent code is in deploy.py's cwd.")
+        print("     Verify there is NO agent_engine_app.py in this directory; it should")
+        print("     live under agent/ subpackage instead.")
+        print("   - Insufficient IAM (need aiplatform.reasoningEngines.create on the project).")
+        raise
     finally:
         stop.set()
         t.join(timeout=1)
@@ -130,26 +147,34 @@ def write_runtime_env() -> str:
     return env_path
 
 
-def deploy_code(engine_id: str, env_file: str) -> None:
-    """Phase 5 — ship code via ADK CLI. Note: NO --trace_to_cloud (breaks Agent Identity)."""
+def deploy_code(engine_id: str, env_file: str) -> bool:
+    """Phase 5 — ship code via ADK CLI. Returns True on apparent success."""
     print("Phase 5: deploying code via `adk deploy agent_engine`")
     cmd = [
         "adk", "deploy", "agent_engine",
         "--project", PROJECT_ID,
         "--region", LOCATION,
-        "--staging_bucket", f"gs://{STAGING_BUCKET}",
         "--env_file", env_file,
         "--agent_engine_id", engine_id,
-        # NOTE: no --trace_to_cloud. M6 Observability shows the right way.
-        ".",  # current directory contains agent.py + tools.py
+        # NOTE: no --trace_to_cloud. Tracing instrumentor 401s under Agent Identity
+        # cold start. M6 Observability re-enables it the right way.
+        # NOTE: no --staging_bucket. Newer SDK auto-manages it; passing triggers deprecation warning.
+        "agent",  # the agent/ subpackage (NOT '.' — `.` bundles cwd including .venv and exceeds the 8 MB request limit).
     ]
     print(f"   $ {' '.join(cmd)}")
     here = os.path.dirname(os.path.abspath(__file__))
     r = subprocess.run(cmd, cwd=here)
-    benign = r.returncode != 0  # ADK CLI may exit non-zero on benign warnings
-    if benign:
-        print("   ⚠️  adk deploy returned non-zero — check Cloud Logs for the engine.")
-        print("      If 'service account info is missing email field' it's benign.")
+    if r.returncode == 0:
+        print("   ✓ adk deploy succeeded")
+        return True
+    print(f"   ❌ adk deploy returned exit code {r.returncode}")
+    print("      To re-run Phase 5 only:")
+    print(f"      export REASONING_ENGINE_ID={engine_id} && python deploy.py")
+    print("      Common causes:")
+    print("        - missing 'agent' subpackage / __init__.py")
+    print("        - adk CLI not on PATH (activate the venv: source .venv/bin/activate)")
+    print("        - no auth: gcloud auth application-default login")
+    return False
 
 
 def construct_identity_fallback(engine_id: str) -> str:
@@ -198,15 +223,23 @@ def main() -> int:
     print(f"\n   AGENT_IDENTITY={agent_identity}")
 
     grant_baseline_iam(agent_identity)
-    deploy_code(engine_id, env_file)
+    ok = deploy_code(engine_id, env_file)
 
     print("\n" + "=" * 64)
-    print("  ✅ Deploy done. Persist these for grant_access.sh:")
+    if ok:
+        print("  ✅ Deploy done. Persist these for grant_access.sh:")
+    else:
+        print("  ⚠️  Engine + IAM are set up, but Phase 5 (code ship) FAILED.")
+        print("  Re-run Phase 5 once the cause is fixed. The IDs below are still valid:")
     print("=" * 64)
     print(f'\n   export REASONING_ENGINE_ID="{engine_id}"')
     print(f'   export AGENT_IDENTITY="{agent_identity}"')
-    print("\nNext: bash grant_access.sh")
-    return 0
+    if ok:
+        print("\nNext: bash grant_access.sh")
+    else:
+        print("\nTo re-run only Phase 5: same `export` lines above, then:")
+        print("   python deploy.py")
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

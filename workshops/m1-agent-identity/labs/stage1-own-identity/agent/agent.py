@@ -31,5 +31,23 @@ def create_agent() -> LlmAgent:
     #   - instruction=INSTRUCTIONS
     #   - tools=[lookup_order]
     #
-    # The reference solution is ../../solutions/stage1/agent.py
+    # The reference solution is ../../solutions/stage1/agent/agent.py
     raise NotImplementedError("Implement create_agent in agent.py")
+
+
+# adk's generated agent_engine_app.py at runtime does `from .agent import root_agent`.
+# We MUST export this symbol — if it's missing the runtime crashes at import time
+# with `ImportError: cannot import name 'root_agent'`.
+#
+# In Agent Engine (AGENT_ENGINE_RUNTIME=true): keep it None so the LlmAgent
+# isn't constructed at import time. Runtime uses our agent_engine_app.py's app.
+# Locally (`adk web`): make it a real instance so the dev server can serve.
+import os  # noqa: E402
+
+_RUNNING_IN_AGENT_ENGINE = os.environ.get("AGENT_ENGINE_RUNTIME", "").lower() == "true"
+try:
+    root_agent = None if _RUNNING_IN_AGENT_ENGINE else create_agent()
+except NotImplementedError:
+    # TODO not yet implemented; keep import succeeding so adk runtime gets a clear
+    # crash later instead of an ImportError that's hard to diagnose.
+    root_agent = None

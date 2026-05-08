@@ -96,6 +96,7 @@ def write_runtime_env() -> str:
             f"GOOGLE_CLOUD_PROJECT={PROJECT_ID}\n"
             f"LOCATION={LOCATION}\n"
             f"ORDERS_BUCKET=acme-orders-{PROJECT_ID}\n"
+            "AGENT_ENGINE_RUNTIME=true\n"  # keep root_agent = None at runtime import
         )
     return env_path
 

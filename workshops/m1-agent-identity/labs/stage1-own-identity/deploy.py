@@ -142,6 +142,10 @@ def write_runtime_env() -> str:
             f"GOOGLE_CLOUD_PROJECT={PROJECT_ID}\n"
             f"LOCATION={LOCATION}\n"
             f"ORDERS_BUCKET=acme-orders-{PROJECT_ID}\n"
+            # Tells agent.py to keep `root_agent = None` at import time so the
+            # LlmAgent isn't constructed during the runtime's import phase
+            # (adk's generated wrapper imports root_agent for side effects).
+            "AGENT_ENGINE_RUNTIME=true\n"
         )
     print(f"   ✓ runtime env: {env_path}")
     return env_path

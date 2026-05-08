@@ -1,0 +1,5 @@
+Lab files (agent.py, tools.py, create_auth_provider.sh, grant_connector_access.sh,
+deploy.py, requirements.txt) to be generated in the next iteration.
+
+The README in this folder is the workshop spec. Validate the framing before
+generating starter code.

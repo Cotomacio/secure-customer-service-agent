@@ -1,0 +1,33 @@
+# Workshop series — root .gitignore
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.venv/
+venv/
+
+# Local env / secrets — never commit
+.env
+.env.local
+*.env.local
+set_env.sh        # repo/ writes secrets into this file at setup time
+deploy.log        # contains agent IDs and identity strings; not strictly secret but noisy
+
+# Editor / OS / tooling
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist/
+build/
+
+# Workshop attendee staging
+.adk_staging/

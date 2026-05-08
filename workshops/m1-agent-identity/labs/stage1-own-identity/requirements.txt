@@ -1,0 +1,12 @@
+# Stage 1 runtime requirements.
+#
+# Versions are LOWER BOUNDS, not pins. Agent Engine's base image ships newer
+# google-auth / google-cloud-aiplatform than older codelabs pinned at; pinning
+# below those forces a downgrade and breaks Agent Identity GA at runtime.
+#
+# If you need to pin for reproducibility, pin >= these floors.
+
+google-adk>=1.21.0
+google-cloud-storage>=2.18.0
+google-cloud-aiplatform[adk,agent_engines]>=1.149.0
+google-auth>=2.50.0

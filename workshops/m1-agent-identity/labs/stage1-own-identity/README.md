@@ -42,7 +42,8 @@ python test_local.py                     # should print all 5 orders
 #                identity_type=AGENT_IDENTITY (3–15 min)
 #      Phase 5 — `adk deploy agent_engine` ships the code
 #    deploy.py does both. Run it and watch.
-python deploy.py
+#    `tee` captures the full output — invaluable if something fails silently.
+python deploy.py 2>&1 | tee deploy.log
 
 # 4. Persist the IDs printed at the end
 export REASONING_ENGINE_ID=...   # printed by deploy.py

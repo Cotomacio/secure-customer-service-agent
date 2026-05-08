@@ -128,10 +128,43 @@ These are the honest "still your problem" items — the workshop calls them out 
 | **ServiceNow Personal Developer Instance** (free) | Stage 2 (2LO) |
 | ~3 hours, but Stage 2's ServiceNow instance can take 15 min to provision — **start that signup first** | |
 
-Run the prerequisites script:
+### Environment setup (do this once before any setup script)
+
+The setup scripts and `deploy.py` read your project, location, and (optionally) org ID from `.env.local`. That file is **gitignored** — you create it from the template that ships in this folder:
 
 ```bash
 cd workshops/m1-agent-identity
+cp .env.local.example .env.local
+```
+
+Edit `.env.local` and fill in `GOOGLE_CLOUD_PROJECT`. The other values default to sensible Stage 1 settings.
+
+If you're in Cloud Shell with a project already set in `gcloud config`, this one-liner auto-fills everything Stage 1 needs:
+
+```bash
+cat > .env.local <<EOF
+export GOOGLE_CLOUD_PROJECT=$(gcloud config get-value project 2>/dev/null)
+export ORG_ID=$(gcloud organizations list --format='value(name)' --limit=1 2>/dev/null)
+export LOCATION=us-central1
+EOF
+
+source .env.local
+echo "PROJECT: $GOOGLE_CLOUD_PROJECT  ORG: $ORG_ID  LOCATION: $LOCATION"
+```
+
+> **`ORG_ID` empty?** Either you have no org (personal GCP project) or `gcloud organizations list` lacks permission. Stage 1 still works — `deploy.py` falls back to a project-scoped SPIFFE URI. Just leave `ORG_ID` empty.
+>
+> **`GOOGLE_CLOUD_PROJECT` empty?** Run `gcloud projects list` to see what you have access to, then `gcloud config set project YOUR_PROJECT_ID` and rerun the heredoc above.
+
+Source it before every script that needs it:
+
+```bash
+source .env.local
+```
+
+### Run the setup scripts
+
+```bash
 bash setup/00_check_prereqs.sh
 bash setup/10_enable_apis.sh
 bash setup/20_create_bucket_and_seed.sh

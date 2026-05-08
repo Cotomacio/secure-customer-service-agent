@@ -101,6 +101,7 @@ def write_runtime_env() -> str:
 
 
 def deploy_code(engine_id: str, env_file: str) -> bool:
+    """Phase 5 with output capture + failure-marker scan (adk lies about exit codes)."""
     print("Phase 5: deploying code via `adk deploy agent_engine`")
     cmd = [
         "adk", "deploy", "agent_engine",
@@ -111,12 +112,28 @@ def deploy_code(engine_id: str, env_file: str) -> bool:
         "agent",
     ]
     here = os.path.dirname(os.path.abspath(__file__))
-    r = subprocess.run(cmd, cwd=here)
-    if r.returncode == 0:
-        print("   ✓ adk deploy succeeded")
-        return True
-    print(f"   ❌ adk deploy returned exit code {r.returncode}")
-    return False
+    proc = subprocess.Popen(cmd, cwd=here, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, bufsize=1)
+    captured: list[str] = []
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        sys.stdout.write(line); sys.stdout.flush()
+        captured.append(line)
+    rc = proc.wait()
+    full = "".join(captured)
+    failures = ("Deploy failed", "failed to start and cannot serve traffic",
+                "Failed to update Agent Engine")
+    successes = ("Updated agent engine", "successfully deployed")
+    matched_failure = next((m for m in failures if m in full), None)
+    has_success = any(m in full for m in successes)
+    if matched_failure:
+        print(f"\n   ❌ adk deploy reported failure: '{matched_failure}' (exit code {rc})")
+        return False
+    if not has_success:
+        print(f"\n   ⚠️  adk deploy exit {rc} but no success marker in output.")
+        return False
+    print("\n   ✓ adk deploy succeeded")
+    return True
 
 
 def construct_identity_fallback(engine_id: str) -> str:

@@ -148,7 +148,13 @@ def write_runtime_env() -> str:
 
 
 def deploy_code(engine_id: str, env_file: str) -> bool:
-    """Phase 5 — ship code via ADK CLI. Returns True on apparent success."""
+    """Phase 5 — ship code via ADK CLI.
+
+    adk frequently exits 0 even when the runtime deploy failed (the 'lying
+    zero exit' problem). To work around: capture stdout, echo it live, and
+    after exit scan for failure markers. Treat the absence of a positive
+    success marker as also a failure.
+    """
     print("Phase 5: deploying code via `adk deploy agent_engine`")
     cmd = [
         "adk", "deploy", "agent_engine",
@@ -163,18 +169,50 @@ def deploy_code(engine_id: str, env_file: str) -> bool:
     ]
     print(f"   $ {' '.join(cmd)}")
     here = os.path.dirname(os.path.abspath(__file__))
-    r = subprocess.run(cmd, cwd=here)
-    if r.returncode == 0:
-        print("   ✓ adk deploy succeeded")
-        return True
-    print(f"   ❌ adk deploy returned exit code {r.returncode}")
-    print("      To re-run Phase 5 only:")
-    print(f"      export REASONING_ENGINE_ID={engine_id} && python deploy.py")
-    print("      Common causes:")
-    print("        - missing 'agent' subpackage / __init__.py")
-    print("        - adk CLI not on PATH (activate the venv: source .venv/bin/activate)")
-    print("        - no auth: gcloud auth application-default login")
-    return False
+
+    proc = subprocess.Popen(
+        cmd, cwd=here, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, bufsize=1,
+    )
+    captured: list[str] = []
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+        captured.append(line)
+    rc = proc.wait()
+    full = "".join(captured)
+
+    # Failure markers we have seen from adk in the wild
+    failure_markers = (
+        "Deploy failed",                        # SDK exception text adk forwards
+        "failed to start and cannot serve traffic",  # Vertex runtime startup crash
+        "Failed to update Agent Engine",         # Vertex API error
+    )
+    success_markers = (
+        "Updated agent engine",   # the canonical "code shipped" line
+        "successfully deployed",  # alternate phrasing in newer adk
+    )
+
+    matched_failure = next((m for m in failure_markers if m in full), None)
+    has_success = any(m in full for m in success_markers)
+
+    if matched_failure:
+        print(f"\n   ❌ adk deploy reported failure: '{matched_failure}'")
+        print(f"      (adk's own exit code was {rc} — adk lies about this; ignore it.)")
+        return False
+    if not has_success and rc != 0:
+        print(f"\n   ❌ adk deploy exited {rc} with no success marker.")
+        return False
+    if not has_success and rc == 0:
+        print("\n   ⚠️  adk deploy exited 0 but no success marker found in output.")
+        print("      Verify the engine is actually serving:")
+        print(f'      curl -H "Authorization: Bearer $(gcloud auth print-access-token)" \\')
+        print(f'        "https://{LOCATION}-aiplatform.googleapis.com/v1/projects/{PROJECT_ID}/locations/{LOCATION}/reasoningEngines/{engine_id}"')
+        return False
+
+    print("\n   ✓ adk deploy succeeded (success marker present in output)")
+    return True
 
 
 def construct_identity_fallback(engine_id: str) -> str:

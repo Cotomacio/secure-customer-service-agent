@@ -1,6 +1,9 @@
-"""Stage 1 reference solution — agent.py."""
+"""Stage 1 reference solution — agent.py.
 
-import os
+The single-step SDK deploy pattern doesn't need a `root_agent` symbol or an
+`agent_engine_app.py` wrapper. `deploy.py` calls `create_agent()` in-process
+and wraps the result in `AdkApp(agent=...)` which is pickled and shipped.
+"""
 
 from google.adk.agents import LlmAgent
 
@@ -26,13 +29,3 @@ def create_agent() -> LlmAgent:
         instruction=INSTRUCTIONS,
         tools=[lookup_order],
     )
-
-
-# adk's generated runtime wrapper does:
-#     from .agent import root_agent
-#     adk_app = AdkApp(agent=root_agent, ...)
-# AdkApp explicitly rejects agent=None with
-#     ValueError: One of `agent` or `app` must be provided.
-# So root_agent MUST be a real LlmAgent instance — the lazy-None pattern from
-# older adk versions does not work here. Build at module import time.
-root_agent = create_agent()

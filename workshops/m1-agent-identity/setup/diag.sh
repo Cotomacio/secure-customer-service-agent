@@ -24,10 +24,26 @@ curl -sH "Authorization: Bearer $(gcloud auth print-access-token)" \
   "https://${LOCATION}-aiplatform.googleapis.com/v1beta1/projects/${GOOGLE_CLOUD_PROJECT}/locations/${LOCATION}/reasoningEngines/${ENGINE_ID}" \
   | python -m json.tool 2>&1 | head -80
 
-bar "2. Recent operations on this engine (LROs — true error often lives here)"
+bar "2. Recent operations across the project (LROs — true error often lives here)"
+# Note: filtering by resourceName needs careful URL encoding; the simpler reliable
+# path is to list recent operations project-wide and let you eyeball the engine id.
 curl -sH "Authorization: Bearer $(gcloud auth print-access-token)" \
-  "https://${LOCATION}-aiplatform.googleapis.com/v1beta1/projects/${GOOGLE_CLOUD_PROJECT}/locations/${LOCATION}/operations?filter=metadata.genericMetadata.resourceName=projects/${PROJECT_NUMBER}/locations/${LOCATION}/reasoningEngines/${ENGINE_ID}&pageSize=5" \
-  | python -m json.tool 2>&1 | head -120
+  "https://${LOCATION}-aiplatform.googleapis.com/v1beta1/projects/${GOOGLE_CLOUD_PROJECT}/locations/${LOCATION}/operations?pageSize=10" \
+  | python -c "
+import json, sys
+data = json.load(sys.stdin)
+for op in data.get('operations', [])[:10]:
+    name = op.get('name', '').split('/')[-1]
+    done = op.get('done', False)
+    err = op.get('error', {})
+    meta = op.get('metadata', {})
+    target = meta.get('genericMetadata', {}).get('resourceName', '')
+    create_t = meta.get('genericMetadata', {}).get('createTime', '')
+    if '${ENGINE_ID}' in target or not target:
+        print(f'{create_t}  done={done}  target=...{target[-80:]}')
+        if err:
+            print(f'    ERROR: code={err.get(\"code\")} message={err.get(\"message\", \"\")[:300]}')
+" 2>&1 | head -60
 
 bar "3. ALL logs from this engine, last 30 min, any severity"
 gcloud logging read \

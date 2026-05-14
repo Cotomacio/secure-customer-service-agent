@@ -82,7 +82,7 @@ def main() -> int:
 
     print("\nPhase 1: building Ada in-process")
     agent = create_agent()
-    app = AdkApp(agent=agent)
+    app = AdkApp(agent=agent, enable_tracing=True)
     print(f"   ✓ AdkApp wrapping agent name={agent.name}, model={agent.model}")
 
     print("\nPhase 2: deploying via client.agent_engines.create()")
@@ -94,7 +94,14 @@ def main() -> int:
         http_options=dict(api_version="v1beta1"),
     )
 
-    here = os.path.dirname(os.path.abspath(__file__))
+    # Pattern cribbed from https://codelabs.developers.google.com/cloudnet-agent-gateway#11
+    # Key bits:
+    #   - `google-adk[agent-identity]>=1.31.0` extra is REQUIRED for identity_type=AGENT_IDENTITY
+    #     to bind a SPIFFE principal at runtime.
+    #   - `cloudpickle` is needed to round-trip the AdkApp through the engine staging.
+    #   - `GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES=false` keeps the runtime
+    #     from short-circuiting GCP API token sharing — without this some startup paths
+    #     fail because of how Agent Identity binds tokens.
     remote_app = client.agent_engines.create(
         agent=app,
         config={
@@ -102,14 +109,16 @@ def main() -> int:
             "identity_type": types.IdentityType.AGENT_IDENTITY,
             "requirements": [
                 "google-cloud-aiplatform[adk,agent_engines]>=1.149.0",
+                "google-adk[agent-identity]>=1.31.0",
                 "google-cloud-storage>=2.18.0",
+                "cloudpickle",
             ],
             "staging_bucket": STAGING_BUCKET,
-            # Ship the local `agent/` subpackage so `from agent.tools import
-            # lookup_order` resolves in the deployed runtime.
-            "extra_packages": [os.path.join(here, "agent")],
+            # Codelab uses bare "agent" (relative to the deploy script's dir).
+            "extra_packages": ["agent"],
             "env_vars": {
                 "ORDERS_BUCKET": f"acme-orders-{PROJECT_ID}",
+                "GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES": "false",
             },
         },
     )

@@ -28,13 +28,11 @@ def create_agent() -> LlmAgent:
     )
 
 
-# adk's generated agent_engine_app.py at runtime does `from .agent import root_agent`.
-# We MUST export this symbol — if it's missing the runtime crashes at import time
-# with `ImportError: cannot import name 'root_agent'`.
-#
-# In Agent Engine (AGENT_ENGINE_RUNTIME=true in .env): keep it None so the
-# LlmAgent isn't constructed at import time. Runtime uses our agent_engine_app.py's
-# `app = AdkApp(agent=create_agent, ...)` factory.
-# Locally (`adk web`): make it a real instance so the dev server can serve.
-_RUNNING_IN_AGENT_ENGINE = os.environ.get("AGENT_ENGINE_RUNTIME", "").lower() == "true"
-root_agent = None if _RUNNING_IN_AGENT_ENGINE else create_agent()
+# adk's generated runtime wrapper does:
+#     from .agent import root_agent
+#     adk_app = AdkApp(agent=root_agent, ...)
+# AdkApp explicitly rejects agent=None with
+#     ValueError: One of `agent` or `app` must be provided.
+# So root_agent MUST be a real LlmAgent instance — the lazy-None pattern from
+# older adk versions does not work here. Build at module import time.
+root_agent = create_agent()

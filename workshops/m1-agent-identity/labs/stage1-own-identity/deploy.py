@@ -111,7 +111,11 @@ def main() -> int:
                 "google-cloud-aiplatform[adk,agent_engines]>=1.149.0",
                 "google-adk[agent-identity]>=1.31.0",
                 "google-cloud-storage>=2.18.0",
+                # Both `cloudpickle` and `pydantic` MUST be explicitly listed —
+                # the SDK pre-validates requirements and rejects the deploy with
+                # `The following requirements are missing: {...}` if either is absent.
                 "cloudpickle",
+                "pydantic",
             ],
             "staging_bucket": STAGING_BUCKET,
             # `extra_packages` ships the file into the image; `build_options.installation_scripts`

@@ -89,6 +89,7 @@ def main() -> int:
                 "google-adk[agent-identity]>=1.31.0",
                 "google-cloud-storage>=2.18.0",
                 "cloudpickle",
+                "pydantic",
             ],
             "staging_bucket": STAGING_BUCKET,
             "extra_packages": ["agent", "installation_scripts/create_venv.sh"],

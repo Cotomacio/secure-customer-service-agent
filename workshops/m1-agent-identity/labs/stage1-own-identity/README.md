@@ -72,8 +72,9 @@ export AGENT_IDENTITY=...         # printed by deploy.py
 bash grant_access.sh
 
 # 6. Talk to Ada
-adk run-remote --reasoning-engine "$REASONING_ENGINE_ID"
-> Where is order ACME-78214?
+python chat.py "Where is order ACME-78214?"
+# (or just `python chat.py` for the default prompt)
+# Note: `adk run-remote` does not exist in current adk; use chat.py instead.
 ```
 
 ## TODOs at a glance

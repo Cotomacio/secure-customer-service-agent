@@ -1,19 +1,15 @@
 """
-Stage 1 — Deploy Ada with Agent Identity (canonical single-step SDK pattern).
+Stage 1 — Deploy Ada to Vertex AI Agent Engine with Agent Identity.
 
-Source of truth for this pattern:
+The canonical pattern: build the AdkApp in-process and pass it inline to
+`client.agent_engines.create(agent=app, config={"identity_type": ...})`.
+The SDK pickles the AdkApp and ships it alongside the agent subpackage
+in a single operation. Code, identity, and IAM baselines all in one script.
+
+References:
   https://docs.cloud.google.com/gemini-enterprise-agent-platform/scale/runtime/agent-identity
   https://docs.cloud.google.com/iam/docs/auth-agent-own-identity
-
-Why not `adk deploy agent_engine`?
-  The ayoisio scaffold uses a two-step `client.agent_engines.create(empty)` +
-  `adk deploy agent_engine --agent_engine_id ...` flow. Current adk versions
-  generate their own server-side `agent_engine_app.py` that does
-  `from .agent import root_agent` and crashes with
-  `ValueError: One of 'agent' or 'app' must be provided` if root_agent is None.
-  Workarounds for that crash are brittle and adk additionally lies about
-  failures by exiting 0. The single-step SDK below sidesteps all of it:
-  the AdkApp instance is built in-process and pickled directly.
+  https://codelabs.developers.google.com/cloudnet-agent-gateway#11
 """
 
 import os

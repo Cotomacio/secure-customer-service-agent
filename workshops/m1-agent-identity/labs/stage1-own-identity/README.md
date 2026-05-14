@@ -10,58 +10,58 @@ Stand up Ada with `identity_type=AGENT_IDENTITY`, grant her SPIFFE principal `ro
 
 ```
 stage1-own-identity/
-├── deploy.py            ← run from here
-├── grant_access.sh
-├── test_local.py
+├── deploy.py                    ← single-step SDK deploy; run from here
+├── chat.py                      ← talk to deployed Ada via stream_query
+├── grant_access.sh              ← bind storage.objectViewer to Ada's SPIFFE principal
+├── test_local.py                ← local sanity check (uses your ADC, not Ada's identity)
 ├── README.md
-└── agent/               ← the agent package adk deploy ships
+├── installation_scripts/
+│   └── create_venv.sh           ← required Agent Engine base-image workaround
+└── agent/                       ← shipped to the engine as a Python subpackage
     ├── __init__.py
-    ├── agent.py            ← TODO: build the LlmAgent
-    ├── tools.py            ← TODO: wrap GCS read in a tool
-    ├── agent_engine_app.py ← AdkApp wrapper (no TODOs)
-    └── requirements.txt    ← runtime deps (lower bounds, not pins)
+    ├── agent.py                    ← TODO: build the LlmAgent
+    ├── tools.py                    ← TODO: wrap GCS read in a tool
+    └── requirements.txt            ← runtime deps (lower bounds, not pins)
 ```
 
 | File | Purpose | Has TODOs? |
 |---|---|---|
 | `agent/tools.py` | Order-lookup tool wrapping `google-cloud-storage` | ✅ |
 | `agent/agent.py` | Ada's `LlmAgent` definition | ✅ |
-| `agent/agent_engine_app.py` | `AdkApp` wrapper required by `adk deploy` | ❌ |
-| `agent/requirements.txt` | Runtime deps (lower bounds, not pins) | ❌ |
-| `deploy.py` | Two-step deploy: empty engine + ADK CLI ship | ❌ |
+| `agent/requirements.txt` | Runtime deps for the deployed engine | ❌ |
+| `installation_scripts/create_venv.sh` | Sets up `/code/.venv` correctly inside the engine container — required for the runtime's compileall step to succeed as appuser | ❌ |
+| `deploy.py` | Single-step SDK deploy + baseline IAM grants | ❌ |
+| `chat.py` | Talk to the deployed agent via `engine.stream_query()` | ❌ |
 | `grant_access.sh` | Bind Ada's principal to `roles/storage.objectViewer` on the bucket | ❌ |
 | `test_local.py` | Local sanity check using your ADC | ❌ |
 
-> **Why is agent code in `agent/` instead of the top level?** The v1beta1 SDK auto-discovers `agent_engine_app.py` if it sits in `deploy.py`'s cwd and tries to bundle the *whole* working dir into the create-engine API call. With `.venv/` plus `deploy.log` being tee'd live, that easily exceeds the 8 MB request payload limit. Putting agent code in a subpackage keeps Phase 3 (engine creation) truly empty; Phase 5's `adk deploy` then ships `agent/` via streamed chunks with no size issue.
-
-The reference solution is in [`../../solutions/stage1/`](../../solutions/stage1/) — same `agent/` subpackage layout.
+The reference solution is in [`../../solutions/stage1/`](../../solutions/stage1/).
 
 ## Steps
 
 ```bash
-# 0. Setup (once for the whole module)
+# 0. Setup (once for the whole module — env vars + APIs + bucket)
 source ../../.env.local
 bash ../../setup/00_check_prereqs.sh
 bash ../../setup/10_enable_apis.sh
 bash ../../setup/20_create_bucket_and_seed.sh
+bash ../../setup/40_enable_audit_logs.sh        # so audit-log verify in step 7 shows the SPIFFE principal
 
 # 1. Implement the TODOs in agent/agent.py and agent/tools.py
 #    (See "TODOs at a glance" below)
 #    OR fast-path for validation: copy the reference solution
-#       cp -r ../../solutions/stage1/agent/. agent/
+#       cp -r ../../solutions/stage1/agent/.                 agent/
+#       cp -r ../../solutions/stage1/installation_scripts/.  installation_scripts/
 
-# 2. Local sanity check using YOUR ADC, not Ada's identity yet
-gcloud auth application-default login   # one-time
+# 2. Local sanity check using YOUR ADC (not Ada's identity yet)
+gcloud auth application-default login          # one-time
 python -m venv .venv && source .venv/bin/activate
 pip install -r agent/requirements.txt
-python test_local.py                     # should print all 5 orders
+python test_local.py                            # should print all 5 seeded orders
 
-# 3. Deploy. This is a TWO-STEP operation:
-#      Phase 3 — create empty Agent Engine via v1beta1 SDK with
-#                identity_type=AGENT_IDENTITY (3–15 min)
-#      Phase 5 — `adk deploy agent_engine` ships the code
-#    deploy.py does both. Run it and watch.
-#    `tee` captures the full output — invaluable if something fails silently.
+# 3. Deploy. Single-step SDK pattern — builds AdkApp in-process and ships it
+#    alongside the agent/ subpackage in one call. 3–10 min on a healthy org.
+#    `tee` captures the full output for debugging.
 python deploy.py 2>&1 | tee deploy.log
 
 # 4. Persist the IDs printed at the end
@@ -72,9 +72,17 @@ export AGENT_IDENTITY=...         # printed by deploy.py
 bash grant_access.sh
 
 # 6. Talk to Ada
-python chat.py "Where is order ACME-78214?"
-# (or just `python chat.py` for the default prompt)
-# Note: `adk run-remote` does not exist in current adk; use chat.py instead.
+python chat.py                                  # default Stage 1 test prompt
+python chat.py "Where is order ACME-78216?"    # try another order
+
+# 7. Audit verification — prove Ada's SPIFFE identity made the GCS read
+gcloud logging read \
+  'resource.type="gcs_bucket" AND protoPayload.resourceName=~"acme-orders" AND protoPayload.methodName="storage.objects.get"' \
+  --limit=3 --freshness=10m \
+  --format='value(timestamp,protoPayload.authenticationInfo.principalSubject)' \
+  --project="$GOOGLE_CLOUD_PROJECT"
+# principalSubject should start with `principal://agents.global.org-...`
+# — NOT a `@developer.gserviceaccount.com` email.
 ```
 
 ## TODOs at a glance
@@ -82,38 +90,19 @@ python chat.py "Where is order ACME-78214?"
 1. **`agent/tools.py` — `lookup_order`.** `storage.Client()` with **no arguments** (ADC → Agent Identity at runtime). Read `orders.csv` and return the row matching `order_id`.
 2. **`agent/agent.py` — `create_agent`.** `LlmAgent(name="ada", model="gemini-2.5-flash", instruction=INSTRUCTIONS, tools=[lookup_order])`.
 
-That's it. `deploy.py`, `agent/agent_engine_app.py`, `grant_access.sh`, and `agent/requirements.txt` are pre-written — they're not the lesson, they're the scaffolding.
+That's it. `deploy.py`, `grant_access.sh`, `chat.py`, and `installation_scripts/create_venv.sh` are pre-written — they're the scaffolding, not the lesson.
 
-## Why two-step deploy?
+## How the deploy works (read once)
 
-The single-step path you see in older tutorials —
+`deploy.py` is one script with three phases:
 
-```python
-ReasoningEngine.create(reasoning_engine=ada, identity_type="AGENT_IDENTITY", ...)
-```
-
-— **does not work** with Agent Identity GA. The runtime expects a `BaseAgent` instance and rejects the factory pattern with a pydantic `ValidationError`. The path that does work:
-
-1. **Phase 3:** create an **empty** engine via `vertexai.Client(http_options=dict(api_version="v1beta1"))` + `client.agent_engines.create(config={"identity_type": types.IdentityType.AGENT_IDENTITY})`. This is what provisions the SPIFFE identity and X.509 cert.
-2. **Phase 5:** ship the code into that engine via `adk deploy agent_engine --agent_engine_id $ENGINE_ID`. ADK CLI handles packaging.
-
-`deploy.py` does both phases. Read it once — it's the canonical Agent Identity bootstrap.
-
-## Why no `--trace_to_cloud`?
-
-You will see other tutorials pass `--trace_to_cloud` to `adk deploy`. **Do not.** Under Agent Identity GA, the tracing instrumentor calls `cloudresourcemanager.projects.get` during cold start, which 401s (the SPIFFE workload credential isn't honored by the resource_manager gRPC client during startup), and Ada fails to start with no useful error in the deploy output. **M6 Observability** shows the right way to enable tracing.
-
-## Why these IAM roles?
-
-`deploy.py` Phase 4 grants three baseline roles at the project scope:
-
-| Role | Why |
+| Phase | What happens |
 |---|---|
-| `roles/serviceusage.serviceUsageConsumer` | Required for any agent to start |
-| `roles/aiplatform.expressUser` | Inference, sessions, memory (NB: not `aiplatform.user`) |
-| `roles/browser` | Read project metadata during startup |
+| **1. Build** | Calls `create_agent()` to get an `LlmAgent` instance, wraps it in `AdkApp(agent=..., enable_tracing=True)`. All in your local Python process. |
+| **2. Deploy** | One SDK call: `client.agent_engines.create(agent=app, config={...})`. The SDK pickles the AdkApp via `cloudpickle`, ships `extra_packages=["agent", "installation_scripts/create_venv.sh"]`, and provisions the SPIFFE identity from `config["identity_type"]`. |
+| **3. Baseline IAM** | Grants three project-scope roles to the new SPIFFE principal that the runtime needs to start: `serviceusage.serviceUsageConsumer`, `aiplatform.expressUser`, `browser`. |
 
-Then `grant_access.sh` adds the **resource-scoped** grant that is the actual lesson of Stage 1:
+`grant_access.sh` (run separately) then adds the **resource-scoped** grant that's the actual lesson:
 
 ```
 roles/storage.objectViewer on gs://acme-orders-${PROJECT_ID}
@@ -121,14 +110,40 @@ roles/storage.objectViewer on gs://acme-orders-${PROJECT_ID}
 
 Bound to Ada's specific SPIFFE principal — not a project-wide service account, not a shared role.
 
+## Why the config shape looks the way it does
+
+Every entry in `deploy.py`'s `config={...}` block earns its place:
+
+| Config item | Why it's there |
+|---|---|
+| `identity_type=AGENT_IDENTITY` | The whole point — provisions the SPIFFE cert and per-agent IAM principal. |
+| `requirements=["google-adk[agent-identity]>=1.31.0", ...]` | The `agent-identity` extra is what makes the runtime ADK actually bind the SPIFFE identity. |
+| `requirements=["cloudpickle", "pydantic", ...]` | The SDK pre-validates the requirements list and rejects the deploy with `The following requirements are missing: {...}` if either is absent. |
+| `extra_packages=["agent", "installation_scripts/create_venv.sh"]` | Ships our `agent/` subpackage so `from agent.tools import lookup_order` resolves at runtime. Also ships the venv-fix script as a regular asset. |
+| `build_options={"installation_scripts": ["installation_scripts/create_venv.sh"]}` | Tells the build step to **execute** `create_venv.sh` (the `extra_packages` entry alone only ships the file). Without this, the base image's compileall step hits a `PermissionError` on root-owned site-packages and the container exits before serving — surfaces as the otherwise-opaque "failed to start and cannot serve traffic" error. |
+| `env_vars={"GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES": "false"}` | Allows the runtime's Agent Identity token to be shared with the standard GCP SDK clients (e.g. `google-cloud-storage`). Without this some startup paths fail with auth errors. |
+| `staging_bucket=gs://...` | Where the SDK uploads the pickled AdkApp before the engine pulls it. |
+
+## Why these IAM roles?
+
+`deploy.py` Phase 3 grants three baseline roles at the project scope:
+
+| Role | Why |
+|---|---|
+| `roles/serviceusage.serviceUsageConsumer` | Required for any agent to start (quota check on aiplatform). |
+| `roles/aiplatform.expressUser` | Inference, sessions, memory. **Note:** not `aiplatform.user`. |
+| `roles/browser` | Read project metadata during startup. |
+
+Then `grant_access.sh` adds the resource-scoped grant. That's where Agent Identity actually delivers value: per-agent, per-resource IAM, audit-attributed to the specific SPIFFE ID.
+
 ## Verify
 
-1. **Functional check.** Ada returns Maria's order status when asked.
-2. **Audit check.** Cloud Logs Explorer, filter on `protoPayload.methodName="storage.objects.get"` AND `resource.labels.bucket_name="acme-orders-${PROJECT_ID}"`. The `protoPayload.authenticationInfo.principalSubject` is the SPIFFE ID, **not** a `@developer.gserviceaccount.com` email.
-3. **No-key check.** No `service_account.json` is referenced anywhere in `agent.py`, `tools.py`, or `agent_engine_app.py`. There is no key file in the deployed image.
-4. **Replay check (advanced).** Capture a token Ada uses and try to replay it from your laptop. It fails because of DPoP/mTLS binding — this is **T2**.
+1. **Functional check.** `python chat.py` returns Maria's order with `out_for_delivery / Denver`.
+2. **Audit check.** Step 7's log query shows `principalSubject` = Ada's SPIFFE URI (only works after `40_enable_audit_logs.sh` ran).
+3. **No-key check.** `grep -r "service_account.json\|GOOGLE_APPLICATION_CREDENTIALS" .` finds nothing in `agent/`, `deploy.py`, or `chat.py`.
+4. **Replay check (advanced).** Capture a token Ada uses and try to replay it from your laptop. It fails because of DPoP/mTLS binding — **T2**.
 
-> 🔭 **Coming in M6:** the GCS read appears in the Agent Observability **Tools** tab keyed by Ada's SPIFFE ID. Latency, error rate, and call count are sliceable per-tool. You'll also see it as a span in Cloud Trace under the parent agent-turn trace — but only after you re-enable tracing the M6-correct way.
+> 🔭 **Coming in M6:** the GCS read appears in the Agent Observability **Tools** tab keyed by Ada's SPIFFE ID. Latency, error rate, and call count are sliceable per-tool, plus the parent agent-turn trace in Cloud Trace.
 
 ## Threats this stage closes
 
@@ -140,18 +155,20 @@ Bound to Ada's specific SPIFFE principal — not a project-wide service account,
 | **T6** over-broad shared SA | IAM bound to *this* agent's principal, not a project-wide SA |
 | **T7** no per-agent attribution | Audit log shows the SPIFFE ID |
 
-## Common pitfalls
+## Troubleshooting
 
-- **`Deploy failed: 400 INVALID_ARGUMENT. Request payload size exceeds the limit: 8388608 bytes`** during Phase 3 → `agent_engine_app.py` is at the top level of `stage1-own-identity/` instead of inside `agent/`. The SDK auto-bundled the whole cwd including `.venv/` and exceeded the 8 MB request limit. Move agent code under `agent/` (this layout already does that — verify nobody added a top-level `agent_engine_app.py`).
-- **Re-running after a Phase 5 failure** → the engine and IAM grants from Phase 3/4 are still good. Just `export REASONING_ENGINE_ID=<id> AGENT_IDENTITY=<principal>` (printed by the prior run) and re-run `python deploy.py`. Phase 3 will skip, Phase 4 is idempotent, Phase 5 retries.
-- **`failed to start and cannot serve traffic`** in Cloud Logs after deploy → you re-added `--trace_to_cloud`. Remove it. Delete the broken engine and redeploy.
-- **`Successfully uninstalled google-auth-2.47.0`** in build log → your `requirements.txt` pinned `google-auth==<too-old>`. Use the `>=2.50.0` floor in this folder's `requirements.txt`.
-- **`Permission denied` reading the bucket** → you skipped `grant_access.sh`. The `REASONING_ENGINE_ID` doesn't exist until Phase 3 completes.
-- **`unknown type principal://…`** → don't hand-construct the SPIFFE URI. Use `AGENT_IDENTITY` printed by `deploy.py` (it pulls `effective_identity` from the API).
-- **Audit log shows a `gserviceaccount` email** → you ran `deploy.py` without `identity_type` somehow (or hit a bug). Verify with `gcloud ai reasoning-engines describe ...` that the engine has Agent Identity enabled. If not, delete and recreate.
-- **`Failed to update Agent Engine: env_vars ... must also provide source code`** → don't pass env vars to the empty `agent_engines.create()` call. Use the `--env_file` to `adk deploy` instead. (`deploy.py` already does this.)
-- **`adk` not found** → `pip install google-adk`. Run from inside the venv.
-- **Re-running after a partial failure** → `export REASONING_ENGINE_ID=<id>` before re-running; `deploy.py` skips Phase 3 and re-attempts the code ship.
+| Symptom | What to check |
+|---|---|
+| **`failed to start and cannot serve traffic`** in deploy output | The container exited before health-check. Almost always one of: (a) `installation_scripts/create_venv.sh` not in BOTH `extra_packages` and `build_options.installation_scripts`; (b) a custom tracing wrapper that's calling `cloudresourcemanager.projects.get` at startup — the default `enable_tracing=True` is fine, but adding `--trace_to_cloud` to any adk CLI command is not. |
+| **`The following requirements are missing: {'cloudpickle', 'pydantic'}`** before Phase 2 | The SDK pre-validates requirements. Both must be explicitly listed. The pre-shipped `deploy.py` has them. |
+| **`Request payload size exceeds the limit: 8388608 bytes`** | The SDK auto-bundled too much from your cwd. Confirm the agent code is under `agent/` (not at the lab root) and that `.venv/` plus `deploy.log` aren't being swept in by an over-broad `extra_packages` entry. |
+| **`unknown type principal://…`** when running `grant_access.sh` | Don't hand-construct the SPIFFE URI. Use the `AGENT_IDENTITY` printed by `deploy.py` (pulled from the API's `effective_identity`). |
+| **`Permission denied`** on the bucket read from inside Ada | You skipped `grant_access.sh`, or `REASONING_ENGINE_ID` was empty when you ran it. Re-run after exporting both IDs from `deploy.py`'s output. |
+| **Audit log shows a `gserviceaccount` email instead of a SPIFFE URI** | Engine was created without `identity_type=AGENT_IDENTITY`. Verify by REST: `curl -H "Authorization: Bearer $(gcloud auth print-access-token)" https://us-central1-aiplatform.googleapis.com/v1beta1/projects/$GOOGLE_CLOUD_PROJECT/locations/us-central1/reasoningEngines/$REASONING_ENGINE_ID` and check `spec.identityType`. If wrong, delete and redeploy. |
+| **`adk: command not found`** when local-testing | `pip install google-adk` after activating the venv. The deploy itself doesn't shell out to `adk` — only `chat.py` and `test_local.py` need a local install. |
+| **Local-changes-blocked `git pull`** when iterating | `git restore workshops/m1-agent-identity/labs/stage1-own-identity/` then re-pull. Local edits to the lab files (e.g. from copying solutions) block fast-forward merges. |
+| **Deploy succeeded but `chat.py` returns 403** | IAM hasn't propagated yet. Wait 60s and retry. If it persists, re-check `grant_access.sh` output — it should print the SPIFFE principal and the `objectViewer` role binding. |
+| **`Reasoning Engine resource [...]` stays unhealthy across multiple deploys** | The engine got into a stuck state. Delete and recreate: `curl -X DELETE -H "Authorization: Bearer $(gcloud auth print-access-token)" "https://us-central1-aiplatform.googleapis.com/v1beta1/projects/$GOOGLE_CLOUD_PROJECT/locations/us-central1/reasoningEngines/$REASONING_ENGINE_ID?force=true"`, then `unset REASONING_ENGINE_ID AGENT_IDENTITY` and re-run `python deploy.py`. |
 
 ## What's still exposed (motivates Stage 2)
 

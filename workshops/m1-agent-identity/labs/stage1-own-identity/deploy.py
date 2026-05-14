@@ -95,13 +95,13 @@ def main() -> int:
     )
 
     # Pattern cribbed from https://codelabs.developers.google.com/cloudnet-agent-gateway#11
-    # Key bits:
-    #   - `google-adk[agent-identity]>=1.31.0` extra is REQUIRED for identity_type=AGENT_IDENTITY
-    #     to bind a SPIFFE principal at runtime.
-    #   - `cloudpickle` is needed to round-trip the AdkApp through the engine staging.
-    #   - `GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES=false` keeps the runtime
-    #     from short-circuiting GCP API token sharing — without this some startup paths
-    #     fail because of how Agent Identity binds tokens.
+    # Key bits — every one matters and was learned the hard way:
+    #   - `google-adk[agent-identity]>=1.31.0`  binds SPIFFE identity at runtime
+    #   - `cloudpickle` round-trips the AdkApp through engine staging
+    #   - `GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES=false`  required for tokens
+    #   - `installation_scripts/create_venv.sh` in BOTH extra_packages AND build_options
+    #     fixes the base image's compileall PermissionError that otherwise prevents startup
+    #     ("failed to start and cannot serve traffic" with no useful logs)
     remote_app = client.agent_engines.create(
         agent=app,
         config={
@@ -114,8 +114,12 @@ def main() -> int:
                 "cloudpickle",
             ],
             "staging_bucket": STAGING_BUCKET,
-            # Codelab uses bare "agent" (relative to the deploy script's dir).
-            "extra_packages": ["agent"],
+            # `extra_packages` ships the file into the image; `build_options.installation_scripts`
+            # tells Agent Engine's build step to EXECUTE it. Both entries are required.
+            "extra_packages": ["agent", "installation_scripts/create_venv.sh"],
+            "build_options": {
+                "installation_scripts": ["installation_scripts/create_venv.sh"],
+            },
             "env_vars": {
                 "ORDERS_BUCKET": f"acme-orders-{PROJECT_ID}",
                 "GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES": "false",

@@ -91,7 +91,10 @@ def main() -> int:
                 "cloudpickle",
             ],
             "staging_bucket": STAGING_BUCKET,
-            "extra_packages": ["agent"],
+            "extra_packages": ["agent", "installation_scripts/create_venv.sh"],
+            "build_options": {
+                "installation_scripts": ["installation_scripts/create_venv.sh"],
+            },
             "env_vars": {
                 "ORDERS_BUCKET": f"acme-orders-{PROJECT_ID}",
                 "GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES": "false",

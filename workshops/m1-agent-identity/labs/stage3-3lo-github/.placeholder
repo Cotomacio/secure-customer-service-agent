@@ -1,5 +1,0 @@
-Lab files (agent.py, tools.py, frontend_consent.py, create_auth_provider.sh,
-deploy.py, requirements.txt) to be generated in the next iteration.
-
-frontend_consent.py is the trickiest file in M1 — Flask app demonstrating
-the LRO consent redirect + FinalizeCredential callback.

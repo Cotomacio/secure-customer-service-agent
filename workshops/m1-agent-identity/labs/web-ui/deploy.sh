@@ -40,6 +40,18 @@ gcloud projects add-iam-policy-binding "$GOOGLE_CLOUD_PROJECT" \
   --condition=None --quiet > /dev/null
 echo "  ✓ granted roles/aiplatform.user to $RUNTIME_SA"
 
+# `gcloud run deploy --source` uses Cloud Build under the hood. Recent projects
+# don't auto-grant the build role to the default compute SA, which surfaces as:
+#   ERROR: (gcloud.run.deploy) PERMISSION_DENIED: Build failed because the
+#          default service account is missing required IAM permissions.
+# Idempotent; safe to re-run.
+PROJECT_NUMBER=$(gcloud projects describe "$GOOGLE_CLOUD_PROJECT" --format='value(projectNumber)')
+gcloud projects add-iam-policy-binding "$GOOGLE_CLOUD_PROJECT" \
+  --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --role="roles/cloudbuild.builds.builder" \
+  --condition=None --quiet > /dev/null
+echo "  ✓ granted roles/cloudbuild.builds.builder to the compute SA (for Cloud Build)"
+
 # Build + deploy. --allow-unauthenticated makes the URL public — fine for
 # demos / colleague playground; for production restrict via IAP or Cloud Run IAM.
 gcloud run deploy "$SERVICE" \

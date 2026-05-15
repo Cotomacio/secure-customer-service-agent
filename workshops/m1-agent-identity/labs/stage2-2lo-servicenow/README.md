@@ -3,28 +3,12 @@
 > *Customer: "I keep getting a checkout error."*
 > Before bothering an engineer, Ada checks ServiceNow for a known incident.
 
-> ⚠️ **Status: preview-API-blocked (May 2026).** Agent Identity Auth Manager's
-> 2-legged OAuth provisioning surface is not fully wired in the current
-> `v1alpha` API. `iamconnectorcredentials.retrieveCredentials` requires an
-> "Authorization" resource per `(connector, user_id)`, but **no public API or
-> CLI verb exists to create one** (only delete/describe/list). The connector
-> spec persists correctly and IAM bindings work, but `retrieve_credentials`
-> returns 404 because there's nothing to retrieve. We've confirmed this with
-> Google's CLI, REST, discovery doc, and direct probes.
->
-> **Treat this stage as a *spec preview* until the API surfaces a
-> `connectors.authorizations.create` verb.** Stage 1 (own identity),
-> Stage 3 (3LO — consent flow auto-creates the authorization, so this
-> blocker does not apply), and Stage 4 (API key — different connector
-> type, may be functional) are not affected.
->
-> **For production workloads needing 2LO today**, the working pattern is to
-> store the client_id + client_secret in Cloud Secret Manager, grant the
-> agent's SPIFFE principal `roles/secretmanager.secretAccessor` on the
-> secret, and have the tool exchange them with the third-party token
-> endpoint directly. Same security boundary (no secret in agent source);
-> different storage. We'll add this as a "Stage 2 — interim pattern" once
-> the preview API ships its missing piece.
+> **Status: validated end-to-end.** Uses Agent Identity Auth Manager's
+> 2-legged OAuth flow via ADK's `AuthenticatedFunctionTool` +
+> `GcpAuthProviderScheme`. The four wiring details that must all be
+> correct (any one wrong and it silently breaks) are called out in the
+> **"How the tool wiring works"** section below — read them before
+> implementing the TODOs.
 
 ## Goal
 
@@ -140,6 +124,17 @@ If running this as a fill-in-the-blanks workshop, the two functions worth implem
    - Return a JSON dict shaped for the LLM (the `result` array plus a `count`).
 
 Everything else — `deploy.py`, `chat.py`, the two shell scripts, `installation_scripts/create_venv.sh` — is scaffolding, not the lesson.
+
+## How the tool wiring works (read this carefully — four details all matter)
+
+Four wiring details must be exactly right. Get any one wrong and the tool fails silently:
+
+| Detail | Where | Why |
+|---|---|---|
+| **Parameter name is `credential` — no leading underscore** | `agent/tools.py` function signature | ADK's `AuthenticatedFunctionTool` calls `self._ignore_params.append("credential")` to strip the parameter from the LLM-facing function declaration. `_credential` (underscore) doesn't match — Gemini sees it and rejects the function with `INVALID_ARGUMENT: parameters._credential schema didn't specify the schema type`. |
+| **Read `credential.http.credentials.token`** | `agent/tools.py` body | The `credential` ADK injects is an `AuthCredential` object, not a token string. Access via `credential.http.credentials.token` (per the canonical `adk-python contributing/samples/gcp_auth` sample). Render as `f"{http.scheme.title()} {token}"` for the `Authorization` header. |
+| **Register `GcpAuthProvider` in `agent/__init__.py`, not `agent.py`** | `agent/__init__.py` | `CredentialManager.register_auth_provider()` mutates class-level state. The deployed runtime only auto-imports modules referenced by the pickled `LlmAgent` — `agent.tools` is referenced (via the function tool), but `agent.agent` is not. Putting the registration in `__init__.py` guarantees it runs whenever any agent submodule loads. If you put it in `agent.py`, the runtime crashes at first tool call with `ValueError: No auth provider registered for custom auth scheme 'gcpAuthProviderScheme'`. |
+| **Wrap with `AuthenticatedFunctionTool`, not a plain function tool** | `agent/agent.py` | The tool needs `auth_config=AuthConfig(auth_scheme=GcpAuthProviderScheme(name="projects/.../connectors/{name}"))` so ADK knows which connector to fetch credentials from. ADK handles the LRO + 2LO consent_pending polling for you — don't call `retrieve_credentials` directly. |
 
 ## How the deploy works (read once)
 

@@ -1,0 +1,2 @@
+streamlit>=1.40.0
+google-cloud-aiplatform[adk,agent_engines]>=1.149.0

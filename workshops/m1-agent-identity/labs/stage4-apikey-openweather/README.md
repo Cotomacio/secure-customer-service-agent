@@ -3,6 +3,14 @@
 > *Customer in Denver: "Why is my package late?"*
 > Acme's logistics team wants Ada to factor weather into ETA explanations. OpenWeather only supports API keys.
 
+> **Status: validated end-to-end.** Same canonical ADK + Auth Manager
+> wiring as Stage 2; only the connector type and credential extraction
+> differ. For API-key connectors, ADK puts the key in
+> `credential.http.additional_headers["X-API-Key"]` rather than
+> `credential.http.credentials.token` (which is the 2LO pattern). See
+> Stage 2's *"How the tool wiring works"* table for the full four-detail
+> contract.
+
 ## Goal
 
 Stand up a new Ada (`ada-stage4`) that has two tools:

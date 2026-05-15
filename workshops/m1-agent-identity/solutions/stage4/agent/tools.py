@@ -1,15 +1,19 @@
 """Stage 4 — Ada tools.
 
-Two tools wired in:
+Two tools:
 
-1. `lookup_order` — same as Stage 1, reads `orders.csv` from GCS using Ada's
-   own SPIFFE identity (ADC at runtime).
-2. `get_weather` — calls OpenWeatherMap for the current weather at a city.
-   Authenticates via an Agent Identity Auth Manager API-key connector: the
-   function asks the iamconnectorcredentials API for the stored API key
-   at every call (using Ada's SPIFFE identity), then uses the key as a
-   query param on the OpenWeather request. The API key lives in Auth
-   Manager — never in agent source or runtime.
+1. `lookup_order` — Stage 1's GCS read via Ada's SPIFFE identity.
+2. `get_weather` — calls OpenWeatherMap. The API key lives in an Agent
+   Identity Auth Manager API-key connector. ADK's `AuthenticatedFunctionTool`
+   fetches it per-call and injects it via the `credential` parameter.
+
+Canonical wiring (same as Stage 2 — see ../stage2.../README.md):
+  - Parameter MUST be named `credential` (no underscore) — ADK strips it
+    from the LLM schema via `_ignore_params.append("credential")`.
+  - Read the secret via `credential.http.credentials.token` per the
+    google/adk-python contributing/samples/gcp_auth pattern.
+  - `CredentialManager.register_auth_provider(GcpAuthProvider())` lives in
+    `agent/__init__.py` so it runs at runtime import.
 """
 
 import csv
@@ -17,7 +21,7 @@ import io
 import os
 
 import requests
-from google.cloud import iamconnectorcredentials_v1alpha, storage
+from google.cloud import storage
 
 
 # ---------------------------------------------------------------------------
@@ -32,14 +36,7 @@ ORDERS_BLOB = "orders.csv"
 
 
 def lookup_order(order_id: str) -> dict:
-    """Look up an Acme Commerce order by its ID.
-
-    Args:
-        order_id: The order identifier, e.g. "ACME-78214".
-
-    Returns:
-        A dict describing the order, or {"found": False} if not found.
-    """
+    """Look up an Acme Commerce order by its ID."""
     client = storage.Client()
     blob = client.bucket(BUCKET_NAME).blob(ORDERS_BLOB)
     text = blob.download_as_text()
@@ -59,52 +56,32 @@ def lookup_order(order_id: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Stage 4 tool — OpenWeatherMap via API-key auth provider (Auth Manager)
+# Stage 4 tool — OpenWeather via API-key auth provider (Auth Manager + ADK)
 # ---------------------------------------------------------------------------
 
-PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
-LOCATION = os.environ.get("LOCATION", "us-central1")
-WEATHER_PROVIDER_NAME = os.environ.get("WEATHER_PROVIDER_NAME", "openweather")
-WEATHER_CONNECTOR_RESOURCE = (
-    f"projects/{PROJECT_ID}/locations/{LOCATION}/connectors/{WEATHER_PROVIDER_NAME}"
-)
 
-
-def _fetch_openweather_api_key() -> str:
-    """Fetch the OpenWeather API key from Agent Identity Auth Manager.
-
-    Uses the agent's SPIFFE identity (via ADC) to authenticate to the
-    iamconnectorcredentials API. Returns the stored API key. The key lives
-    in Auth Manager — Ada's process holds only the connector's resource name.
-    """
-    client = iamconnectorcredentials_v1alpha.IAMConnectorCredentialsServiceClient()
-    request = iamconnectorcredentials_v1alpha.RetrieveCredentialsRequest(
-        connector=WEATHER_CONNECTOR_RESOURCE,
-        user_id="ada-agent",
-    )
-    operation = client.retrieve_credentials(request=request)
-    response = operation.result(timeout=30)
-    return response.token
-
-
-def get_weather(city: str, units: str = "imperial") -> dict:
+def get_weather(city: str, units: str = "imperial", credential=None) -> dict:
     """Get current weather for a city via OpenWeatherMap.
 
     Args:
         city: City name (e.g., "Denver", "London,uk").
-        units: "imperial" (°F, mph) or "metric" (°C, m/s). Default imperial.
+        units: "imperial" (°F, mph) or "metric" (°C, m/s).
+        credential: Injected by ADK's AuthenticatedFunctionTool. An
+            `AuthCredential` object whose `http.credentials.token` field
+            holds the stored API key. Parameter name MUST be `credential`
+            (no leading underscore) for the LLM-schema strip to match.
 
     Returns:
-        {"found": True, "city": ..., "temp": ..., "conditions": ..., ...}
-        or {"found": False, "error": "..."} on failure.
+        {"found": True, "city": ..., "temp": ..., ...} or
+        {"found": False, "error": "..."}.
     """
-    try:
-        api_key = _fetch_openweather_api_key()
-    except Exception as exc:  # noqa: BLE001
-        return {
-            "found": False,
-            "error": f"Could not fetch OpenWeather API key from Auth Manager: {exc}",
-        }
+    if credential is None:
+        return {"found": False, "error": "No credential injected by AuthenticatedFunctionTool"}
+
+    http = getattr(credential, "http", None)
+    if not (http and http.credentials and getattr(http.credentials, "token", None)):
+        return {"found": False, "error": f"Credential missing http.credentials.token: {credential}"}
+    api_key = http.credentials.token
 
     resp = requests.get(
         "https://api.openweathermap.org/data/2.5/weather",

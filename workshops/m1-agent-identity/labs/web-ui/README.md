@@ -80,22 +80,31 @@ Streamlit serves on `http://localhost:8501` by default.
 
 **Important**: the Cloud Run service identity is **not** the same as Ada's SPIFFE identity. Ada's identity is enforced by Agent Engine at the per-engine level. The Cloud Run SA only has permission to *invoke* the engine, not to read GCS/ServiceNow/etc. directly.
 
-## Production hardening (when you're past the demo)
+## Production hardening: enable IAP
+
+Many enterprise orgs have `constraints/iam.allowedPolicyMemberDomains` set, which silently strips the `allUsers` member that `--allow-unauthenticated` tries to add. The Cloud Run service ends up private despite the flag, and hitting the URL returns `403 Forbidden` from Google Frontend. Use IAP instead — it's the production-grade path anyway.
+
+`enable_iap.sh` is the one-shot:
 
 ```bash
-# Remove the public URL — require IAP authentication
-gcloud run services update "$ADA_WEB_SERVICE" \
-  --region="$LOCATION" \
-  --no-allow-unauthenticated
+# Optional: comma-separated list of who should have access.
+# Defaults to the gcloud-authenticated user (you).
+export IAP_USERS="user:you@acme.example,user:colleague@acme.example,group:support-engineers@acme.example"
 
-# Then either:
-#   - Add IAP: https://cloud.google.com/iap/docs/enabling-cloud-run
-#   - Or grant specific users/groups roles/run.invoker:
-gcloud run services add-iam-policy-binding "$ADA_WEB_SERVICE" \
-  --region="$LOCATION" \
-  --member="user:colleague@acme.example" \
-  --role="roles/run.invoker"
+bash enable_iap.sh
 ```
+
+The script:
+1. Enables `iap.googleapis.com`
+2. Updates the Cloud Run service to require IAP (`--iap --no-allow-unauthenticated`)
+3. Grants the IAP service agent (`service-PROJECT_NUMBER@gcp-sa-iap.iam.gserviceaccount.com`) `roles/run.invoker` on the service — needed so IAP can invoke the service after it authenticates the user
+4. Grants each member in `$IAP_USERS` `roles/iap.httpsResourceAccessor` on the service
+
+After that, hitting the URL in any browser pops a Google sign-in. Granted users pass through; everyone else gets "You don't have access."
+
+**One-time setup**: the first time you use IAP in a project, configure the OAuth consent screen at `https://console.cloud.google.com/apis/credentials/consent?project=$GOOGLE_CLOUD_PROJECT`. The script links to it on first run.
+
+Per the canonical [Cloud Run + IAP doc](https://docs.cloud.google.com/run/docs/securing/identity-aware-proxy-cloud-run).
 
 For multi-user demos where each user should consent to GitHub themselves (per the 3LO flow), you'd also want a Google sign-in / IAP integration so the `user_id` passed to `stream_query` matches a real human's identifier — out of scope for M1's web UI; possibly covered in M5 Agent Gateway when IAP integration becomes the canonical pattern.
 

@@ -3,6 +3,29 @@
 > *Customer: "I keep getting a checkout error."*
 > Before bothering an engineer, Ada checks ServiceNow for a known incident.
 
+> ⚠️ **Status: preview-API-blocked (May 2026).** Agent Identity Auth Manager's
+> 2-legged OAuth provisioning surface is not fully wired in the current
+> `v1alpha` API. `iamconnectorcredentials.retrieveCredentials` requires an
+> "Authorization" resource per `(connector, user_id)`, but **no public API or
+> CLI verb exists to create one** (only delete/describe/list). The connector
+> spec persists correctly and IAM bindings work, but `retrieve_credentials`
+> returns 404 because there's nothing to retrieve. We've confirmed this with
+> Google's CLI, REST, discovery doc, and direct probes.
+>
+> **Treat this stage as a *spec preview* until the API surfaces a
+> `connectors.authorizations.create` verb.** Stage 1 (own identity),
+> Stage 3 (3LO — consent flow auto-creates the authorization, so this
+> blocker does not apply), and Stage 4 (API key — different connector
+> type, may be functional) are not affected.
+>
+> **For production workloads needing 2LO today**, the working pattern is to
+> store the client_id + client_secret in Cloud Secret Manager, grant the
+> agent's SPIFFE principal `roles/secretmanager.secretAccessor` on the
+> secret, and have the tool exchange them with the third-party token
+> endpoint directly. Same security boundary (no secret in agent source);
+> different storage. We'll add this as a "Stage 2 — interim pattern" once
+> the preview API ships its missing piece.
+
 ## Goal
 
 Stand up a new Ada (`ada-stage2`) that has two tools:

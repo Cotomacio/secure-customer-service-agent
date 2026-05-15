@@ -5,10 +5,11 @@ Two tools wired in:
 1. `lookup_order` — same as Stage 1, reads `orders.csv` from GCS using Ada's
    own SPIFFE identity (ADC at runtime).
 2. `lookup_incidents` — calls ServiceNow's REST API for active incidents.
-   Authenticates via the Agent Identity Auth Manager's 2-legged OAuth flow:
-   the agent never holds the ServiceNow client_id / client_secret. The
-   bearer token is fetched at call time from Auth Manager and injected
-   into `_credential` by the ADK `AuthenticatedFunctionTool` wrapper.
+   Authenticates via Agent Identity Auth Manager's 2-legged OAuth flow:
+   the function asks the iamconnectorcredentials API for a fresh ServiceNow
+   bearer token at every call (using Ada's SPIFFE identity for the API call
+   itself), then uses that token to call ServiceNow. The ServiceNow client_id
+   and client_secret live in Auth Manager — never in agent source or runtime.
 """
 
 import csv
@@ -16,7 +17,7 @@ import io
 import os
 
 import requests
-from google.cloud import storage
+from google.cloud import iamconnectorcredentials_v1alpha, storage
 
 
 # ---------------------------------------------------------------------------
@@ -61,10 +62,37 @@ def lookup_order(order_id: str) -> dict:
 # Stage 2 tool — ServiceNow incident lookup via 2-legged OAuth (Auth Manager)
 # ---------------------------------------------------------------------------
 
+PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
+LOCATION = os.environ.get("LOCATION", "us-central1")
 SNOW_INSTANCE_URL = os.environ.get("SNOW_INSTANCE_URL", "").rstrip("/")
+SNOW_PROVIDER_NAME = os.environ.get("SNOW_PROVIDER_NAME", "snow-incidents")
+SNOW_CONNECTOR_RESOURCE = (
+    f"projects/{PROJECT_ID}/locations/{LOCATION}/connectors/{SNOW_PROVIDER_NAME}"
+)
 
 
-def lookup_incidents(query: str = "active=true", limit: int = 5, _credential=None) -> dict:
+def _fetch_servicenow_token() -> str:
+    """Fetch a fresh ServiceNow bearer token from Agent Identity Auth Manager.
+
+    Uses the agent's SPIFFE identity (via ADC) to authenticate to the
+    iamconnectorcredentials API. Auth Manager performs the 2-legged OAuth
+    exchange with ServiceNow internally and returns the resulting bearer token.
+    The ServiceNow client_id / client_secret stay in Auth Manager.
+    """
+    client = iamconnectorcredentials_v1alpha.IAMConnectorCredentialsServiceClient()
+    request = iamconnectorcredentials_v1alpha.RetrieveCredentialsRequest(
+        connector=SNOW_CONNECTOR_RESOURCE,
+        # `user_id` is required by the API but irrelevant for 2-legged flows
+        # (there's no per-user token to look up). A stable agent identifier
+        # makes audit logs readable.
+        user_id="ada-agent",
+    )
+    operation = client.retrieve_credentials(request=request)
+    response = operation.result(timeout=30)
+    return response.token
+
+
+def lookup_incidents(query: str = "active=true", limit: int = 5) -> dict:
     """Look up ServiceNow incidents matching an encoded query.
 
     Args:
@@ -73,23 +101,26 @@ def lookup_incidents(query: str = "active=true", limit: int = 5, _credential=Non
             - "active=true^short_descriptionLIKEcheckout"    (active + matching text)
             - "category=software^state=2"                    (software, in-progress)
         limit: Max incidents to return (default 5).
-        _credential: Injected by ADK's AuthenticatedFunctionTool with the OAuth
-            access token retrieved from Auth Manager. Ada's process never holds
-            the ServiceNow client_id / client_secret.
 
     Returns:
         {"found": True, "count": N, "incidents": [...]} or {"found": False, ...}
     """
     if not SNOW_INSTANCE_URL:
         return {"found": False, "error": "SNOW_INSTANCE_URL not set in agent env"}
-    if _credential is None or not getattr(_credential, "access_token", None):
-        return {"found": False, "error": "No credential injected by Auth Manager"}
+
+    try:
+        snow_token = _fetch_servicenow_token()
+    except Exception as exc:  # noqa: BLE001 — surface auth issues clearly to the LLM
+        return {
+            "found": False,
+            "error": f"Could not fetch ServiceNow token from Auth Manager: {exc}",
+        }
 
     url = f"{SNOW_INSTANCE_URL}/api/now/table/incident"
     resp = requests.get(
         url,
         headers={
-            "Authorization": f"Bearer {_credential.access_token}",
+            "Authorization": f"Bearer {snow_token}",
             "Accept": "application/json",
         },
         params={

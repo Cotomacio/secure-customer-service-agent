@@ -28,15 +28,27 @@ echo "→ Enabling iap.googleapis.com..."
 gcloud services enable iap.googleapis.com --project="$GOOGLE_CLOUD_PROJECT" >/dev/null 2>&1 || true
 echo "  ✓"
 
-# Step 2: flip the Cloud Run service to require IAP
+# Step 2: flip the Cloud Run service to require IAP.
+# Note: `gcloud run services update` does NOT accept --no-allow-unauthenticated
+# (that flag is deploy-only). Public access is controlled via the allUsers
+# IAM binding, which we remove separately below if it exists.
 echo "→ Updating Cloud Run service to require IAP..."
 gcloud run services update "$SERVICE" \
   --region="$LOCATION" \
   --project="$GOOGLE_CLOUD_PROJECT" \
-  --no-allow-unauthenticated \
   --iap \
   --quiet
-echo "  ✓ service now requires IAP"
+echo "  ✓ IAP enabled on service"
+
+# Make sure public access is off (idempotent — may be absent already if
+# org policy blocked allUsers at deploy time)
+gcloud run services remove-iam-policy-binding "$SERVICE" \
+  --region="$LOCATION" \
+  --project="$GOOGLE_CLOUD_PROJECT" \
+  --member="allUsers" \
+  --role="roles/run.invoker" \
+  --quiet > /dev/null 2>&1 || true
+echo "  ✓ allUsers binding removed (or never existed)"
 
 # Step 3: grant the IAP service agent permission to invoke the service.
 # (IAP authenticates the user, then calls Cloud Run as itself.)

@@ -5,11 +5,13 @@ Two tools wired in:
 1. `lookup_order` — same as Stage 1, reads `orders.csv` from GCS using Ada's
    own SPIFFE identity (ADC at runtime).
 2. `lookup_incidents` — calls ServiceNow's REST API for active incidents.
-   Authenticates via Agent Identity Auth Manager's 2-legged OAuth flow:
-   the function asks the iamconnectorcredentials API for a fresh ServiceNow
-   bearer token at every call (using Ada's SPIFFE identity for the API call
-   itself), then uses that token to call ServiceNow. The ServiceNow client_id
-   and client_secret live in Auth Manager — never in agent source or runtime.
+   Authenticates via Agent Identity Auth Manager's 2-legged OAuth flow.
+   The tool is wrapped in `AuthenticatedFunctionTool`; ADK calls
+   `retrieve_credentials` and injects the resulting bearer token via the
+   `credential` parameter at call time. The ServiceNow client_id and
+   client_secret live in Auth Manager — never in agent source or runtime.
+
+Canonical pattern: https://github.com/google/adk-python/tree/main/contributing/samples/gcp_auth
 """
 
 import csv
@@ -17,7 +19,7 @@ import io
 import os
 
 import requests
-from google.cloud import iamconnectorcredentials_v1alpha, storage
+from google.cloud import storage
 
 
 # ---------------------------------------------------------------------------
@@ -40,7 +42,7 @@ def lookup_order(order_id: str) -> dict:
     Returns:
         A dict describing the order, or {"found": False} if not found.
     """
-    client = storage.Client()  # ADC -> Agent Identity at runtime
+    client = storage.Client()
     blob = client.bucket(BUCKET_NAME).blob(ORDERS_BLOB)
     text = blob.download_as_text()
 
@@ -59,40 +61,13 @@ def lookup_order(order_id: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Stage 2 tool — ServiceNow incident lookup via 2-legged OAuth (Auth Manager)
+# Stage 2 tool — ServiceNow via 2-legged OAuth (Auth Manager + ADK)
 # ---------------------------------------------------------------------------
 
-PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
-LOCATION = os.environ.get("LOCATION", "us-central1")
 SNOW_INSTANCE_URL = os.environ.get("SNOW_INSTANCE_URL", "").rstrip("/")
-SNOW_PROVIDER_NAME = os.environ.get("SNOW_PROVIDER_NAME", "snow-incidents")
-SNOW_CONNECTOR_RESOURCE = (
-    f"projects/{PROJECT_ID}/locations/{LOCATION}/connectors/{SNOW_PROVIDER_NAME}"
-)
 
 
-def _fetch_servicenow_token() -> str:
-    """Fetch a fresh ServiceNow bearer token from Agent Identity Auth Manager.
-
-    Uses the agent's SPIFFE identity (via ADC) to authenticate to the
-    iamconnectorcredentials API. Auth Manager performs the 2-legged OAuth
-    exchange with ServiceNow internally and returns the resulting bearer token.
-    The ServiceNow client_id / client_secret stay in Auth Manager.
-    """
-    client = iamconnectorcredentials_v1alpha.IAMConnectorCredentialsServiceClient()
-    request = iamconnectorcredentials_v1alpha.RetrieveCredentialsRequest(
-        connector=SNOW_CONNECTOR_RESOURCE,
-        # `user_id` is required by the API but irrelevant for 2-legged flows
-        # (there's no per-user token to look up). A stable agent identifier
-        # makes audit logs readable.
-        user_id="ada-agent",
-    )
-    operation = client.retrieve_credentials(request=request)
-    response = operation.result(timeout=30)
-    return response.token
-
-
-def lookup_incidents(query: str = "active=true", limit: int = 5) -> dict:
+def lookup_incidents(query: str = "active=true", limit: int = 5, credential=None) -> dict:
     """Look up ServiceNow incidents matching an encoded query.
 
     Args:
@@ -101,28 +76,34 @@ def lookup_incidents(query: str = "active=true", limit: int = 5) -> dict:
             - "active=true^short_descriptionLIKEcheckout"    (active + matching text)
             - "category=software^state=2"                    (software, in-progress)
         limit: Max incidents to return (default 5).
+        credential: Injected by ADK's AuthenticatedFunctionTool. An
+            `AuthCredential` object with the OAuth bearer token. Note:
+            parameter name MUST be `credential` (no leading underscore)
+            so ADK strips it from the Gemini function declaration.
 
     Returns:
         {"found": True, "count": N, "incidents": [...]} or {"found": False, ...}
     """
     if not SNOW_INSTANCE_URL:
         return {"found": False, "error": "SNOW_INSTANCE_URL not set in agent env"}
+    if credential is None:
+        return {"found": False, "error": "No credential injected by AuthenticatedFunctionTool"}
 
-    try:
-        snow_token = _fetch_servicenow_token()
-    except Exception as exc:  # noqa: BLE001 — surface auth issues clearly to the LLM
-        return {
-            "found": False,
-            "error": f"Could not fetch ServiceNow token from Auth Manager: {exc}",
-        }
+    # Extract the bearer token from the AuthCredential. Per the canonical
+    # adk-python contributing/samples/gcp_auth pattern: read from credential.http.
+    headers = {"Accept": "application/json"}
+    http = getattr(credential, "http", None)
+    if http and http.scheme and http.credentials and getattr(http.credentials, "token", None):
+        headers["Authorization"] = f"{http.scheme.title()} {http.credentials.token}"
+        # Some providers add extra headers (e.g. signed JWTs)
+        if getattr(http, "additional_headers", None):
+            headers.update(http.additional_headers)
+    else:
+        return {"found": False, "error": f"Credential missing http.credentials.token: {credential}"}
 
-    url = f"{SNOW_INSTANCE_URL}/api/now/table/incident"
     resp = requests.get(
-        url,
-        headers={
-            "Authorization": f"Bearer {snow_token}",
-            "Accept": "application/json",
-        },
+        f"{SNOW_INSTANCE_URL}/api/now/table/incident",
+        headers=headers,
         params={
             "sysparm_query": query,
             "sysparm_limit": str(limit),

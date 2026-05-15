@@ -1,9 +1,12 @@
 """Stage 2 reference solution — Ada with order lookup + ServiceNow incidents.
 
-Same Ada as Stage 1, with one additional tool. The new tool is wrapped in
-ADK's `AuthenticatedFunctionTool` and bound to a 2-legged OAuth provider
-in Agent Identity Auth Manager. The ServiceNow client_id and client_secret
-live in Auth Manager — Ada's process holds only the provider's resource name.
+Canonical ADK + Agent Identity Auth Manager integration:
+  https://github.com/google/adk-python/tree/main/contributing/samples/gcp_auth
+
+The ServiceNow OAuth client lives in an Agent Identity Auth Manager 2LO
+connector. ADK's `AuthenticatedFunctionTool` calls `retrieve_credentials`
+under the hood and injects the resulting bearer token into the wrapped
+function via the `credential` parameter.
 """
 
 import os
@@ -20,14 +23,15 @@ from google.adk.tools.authenticated_function_tool import AuthenticatedFunctionTo
 from .tools import lookup_incidents, lookup_order
 
 
-# Register Agent Identity Auth Manager as the credential source. Idempotent.
+# Register Agent Identity Auth Manager as the credential source. Class-level,
+# one-shot. Idempotent.
 CredentialManager.register_auth_provider(GcpAuthProvider())
 
 
-PROJECT_ID = os.environ["GOOGLE_CLOUD_PROJECT"]
+PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
 LOCATION = os.environ.get("LOCATION", "us-central1")
 SNOW_PROVIDER_NAME = os.environ.get("SNOW_PROVIDER_NAME", "snow-incidents")
-SNOW_PROVIDER_RESOURCE = (
+SNOW_CONNECTOR_RESOURCE = (
     f"projects/{PROJECT_ID}/locations/{LOCATION}/connectors/{SNOW_PROVIDER_NAME}"
 )
 
@@ -52,13 +56,10 @@ Never reveal another customer's order. Never invent incident numbers.
 
 
 def create_agent() -> LlmAgent:
-    # The ServiceNow tool wraps `lookup_incidents` in AuthenticatedFunctionTool
-    # so the ADK runtime fetches the bearer token from Auth Manager at call time
-    # and injects it as `_credential` into the function.
     servicenow_tool = AuthenticatedFunctionTool(
         func=lookup_incidents,
         auth_config=AuthConfig(
-            auth_scheme=GcpAuthProviderScheme(name=SNOW_PROVIDER_RESOURCE),
+            auth_scheme=GcpAuthProviderScheme(name=SNOW_CONNECTOR_RESOURCE),
         ),
     )
 

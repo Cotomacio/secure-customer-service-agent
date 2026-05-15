@@ -1,19 +1,39 @@
 """Stage 2 reference solution — Ada with order lookup + ServiceNow incidents.
 
-Same Ada as Stage 1 plus one extra tool that calls ServiceNow on the agent's
-own authority. The ServiceNow OAuth client lives in Agent Identity Auth
-Manager — Ada's code only holds the connector's resource name and uses her
-SPIFFE identity to fetch a fresh bearer token per call from
-`iamconnectorcredentials.googleapis.com`.
+Canonical ADK + Agent Identity Auth Manager integration:
+  https://github.com/google/adk-python/tree/main/contributing/samples/gcp_auth
 
-The tool is registered as a plain function tool. The token fetch happens
-inside `lookup_incidents` itself (see `tools.py`) — straightforward, no
-hidden parameter injection.
+The ServiceNow OAuth client lives in an Agent Identity Auth Manager 2LO
+connector. ADK's `AuthenticatedFunctionTool` calls `retrieve_credentials`
+under the hood and injects the resulting bearer token into the wrapped
+function via the `credential` parameter.
 """
 
+import os
+
 from google.adk.agents import LlmAgent
+from google.adk.auth.auth_tool import AuthConfig
+from google.adk.auth.credential_manager import CredentialManager
+from google.adk.integrations.agent_identity import (
+    GcpAuthProvider,
+    GcpAuthProviderScheme,
+)
+from google.adk.tools.authenticated_function_tool import AuthenticatedFunctionTool
 
 from .tools import lookup_incidents, lookup_order
+
+
+# Register Agent Identity Auth Manager as the credential source. Class-level,
+# one-shot. Idempotent.
+CredentialManager.register_auth_provider(GcpAuthProvider())
+
+
+PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
+LOCATION = os.environ.get("LOCATION", "us-central1")
+SNOW_PROVIDER_NAME = os.environ.get("SNOW_PROVIDER_NAME", "snow-incidents")
+SNOW_CONNECTOR_RESOURCE = (
+    f"projects/{PROJECT_ID}/locations/{LOCATION}/connectors/{SNOW_PROVIDER_NAME}"
+)
 
 
 INSTRUCTIONS = """
@@ -36,9 +56,16 @@ Never reveal another customer's order. Never invent incident numbers.
 
 
 def create_agent() -> LlmAgent:
+    servicenow_tool = AuthenticatedFunctionTool(
+        func=lookup_incidents,
+        auth_config=AuthConfig(
+            auth_scheme=GcpAuthProviderScheme(name=SNOW_CONNECTOR_RESOURCE),
+        ),
+    )
+
     return LlmAgent(
         name="ada",
         model="gemini-2.5-flash",
         instruction=INSTRUCTIONS,
-        tools=[lookup_order, lookup_incidents],
+        tools=[lookup_order, servicenow_tool],
     )

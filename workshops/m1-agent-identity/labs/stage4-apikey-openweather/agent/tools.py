@@ -66,10 +66,11 @@ def get_weather(city: str, units: str = "imperial", credential=None) -> dict:
     Args:
         city: City name (e.g., "Denver", "London,uk").
         units: "imperial" (°F, mph) or "metric" (°C, m/s).
-        credential: Injected by ADK's AuthenticatedFunctionTool. An
-            `AuthCredential` object whose `http.credentials.token` field
-            holds the stored API key. Parameter name MUST be `credential`
-            (no leading underscore) for the LLM-schema strip to match.
+        credential: Injected by ADK's AuthenticatedFunctionTool. For API-key
+            connectors, ADK populates `credential.http.additional_headers`
+            with `X-API-Key` (the key value) — NOT `credentials.token` (that's
+            the 2LO pattern). Parameter name MUST be `credential` (no
+            underscore) for ADK's LLM-schema strip to match.
 
     Returns:
         {"found": True, "city": ..., "temp": ..., ...} or
@@ -79,9 +80,13 @@ def get_weather(city: str, units: str = "imperial", credential=None) -> dict:
         return {"found": False, "error": "No credential injected by AuthenticatedFunctionTool"}
 
     http = getattr(credential, "http", None)
-    if not (http and http.credentials and getattr(http.credentials, "token", None)):
-        return {"found": False, "error": f"Credential missing http.credentials.token: {credential}"}
-    api_key = http.credentials.token
+    headers = getattr(http, "additional_headers", None) if http else None
+    api_key = (headers or {}).get("X-API-Key") or (headers or {}).get("X-GOOG-API-KEY")
+    if not api_key:
+        return {
+            "found": False,
+            "error": f"Credential missing API key in http.additional_headers: {credential}",
+        }
 
     resp = requests.get(
         "https://api.openweathermap.org/data/2.5/weather",
